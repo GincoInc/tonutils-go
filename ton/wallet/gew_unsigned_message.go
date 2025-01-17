@@ -6,15 +6,47 @@ package wallet
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 
+	// "github.com/xssnick/tonutils-go/address"
 	"github.com/xssnick/tonutils-go/tlb"
 	"github.com/xssnick/tonutils-go/tvm/cell"
 )
 
-func (w *Wallet) BuildUnsignedMessage(ctx context.Context, message *Message, expiry uint64) (*tlb.ExternalMessage, error) {
-	return w.PrepareUnsignedMessageForMany(ctx, []*Message{message}, expiry)
+func FromPublicKey(key ed25519.PublicKey, version VersionConfig, subwallet uint32) (*Wallet, error) {
+	// var subwallet uint32 = DefaultSubwallet
+
+	// // default subwallet depends on wallet type
+	// switch version.(type) {
+	// case ConfigV5R1Beta:
+	// case ConfigV5R1Final:
+	// 	subwallet = 0
+	// }
+
+	addr, err := AddressFromPubKey(key, version, subwallet)
+	if err != nil {
+		return nil, err
+	}
+
+	w := &Wallet{
+		// api:       api,
+		addr:      addr,
+		ver:       version,
+		subwallet: subwallet,
+	}
+
+	// w.spec, err = getSpec(w)
+	// if err != nil {
+	// 	return nil, err
+	// }
+
+	return w, nil
+}
+
+func (w *Wallet) BuildUnsignedMessage(ctx context.Context, message *Message, sequenceNumber, expiry uint64) (*tlb.ExternalMessage, error) {
+	return w.PrepareUnsignedMessageForMany(ctx, []*Message{message}, sequenceNumber, expiry)
 }
 
 /*
@@ -41,7 +73,7 @@ PrepareExternalMessageForMany - Prepares external message for wallet
 can be used directly for offline signing but custom fetchers should be defined in this case
 */
 
-func (w *Wallet) PrepareUnsignedMessageForMany(ctx context.Context, messages []*Message, expiry uint64) (_ *tlb.ExternalMessage, err error) {
+func (w *Wallet) PrepareUnsignedMessageForMany(ctx context.Context, messages []*Message, sequenceNumber, expiry uint64) (_ *tlb.ExternalMessage, err error) {
 	/*
 		var stateInit *tlb.StateInit
 		if withStateInit {
@@ -65,7 +97,7 @@ func (w *Wallet) PrepareUnsignedMessageForMany(ctx context.Context, messages []*
 		switch v {
 		// case V3R2, V3R1, V4R2, V4R1, V5R1Beta, V5R1Final:
 		case V5R1Final:
-			msg, err = w.spec.(RegularBuilder).BuildUnsignedMessage(ctx, messages, expiry)
+			msg, err = w.BuildV5R1UnsignedMessage(ctx, messages, sequenceNumber, expiry)
 			if err != nil {
 				return nil, fmt.Errorf("build message err: %w", err)
 			}
@@ -104,26 +136,32 @@ func (w *Wallet) PrepareUnsignedMessageForMany(ctx context.Context, messages []*
 	}, nil
 }
 
-func (s *SpecV5R1Final) BuildUnsignedMessage(ctx context.Context, messages []*Message, expiry uint64) (_ *cell.Cell, err error) {
+func (w *Wallet) BuildV5R1UnsignedMessage(ctx context.Context, messages []*Message, sequenceNumber, expiry uint64) (_ *cell.Cell, err error) {
 	if len(messages) > 255 {
 		return nil, errors.New("for this type of wallet max 255 messages can be sent at the same time")
 	}
 
-	seq, err := s.seqnoFetcher(ctx, s.wallet.subwallet)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch seqno: %w", err)
-	}
+	// seq, err := s.seqnoFetcher(ctx, s.wallet.subwallet)
+	// if err != nil {
+	// 	return nil, fmt.Errorf("failed to fetch seqno: %w", err)
+	// }
 
 	actions, err := packV5Actions(messages)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build actions: %w", err)
 	}
 
-	walletId := V5R1ID{
-		NetworkGlobalID: s.config.NetworkGlobalID,
-		WorkChain:       s.config.Workchain,
-		SubwalletNumber: uint16(s.wallet.subwallet),
-		WalletVersion:   0,
+	var walletId V5R1ID
+	switch config := w.ver.(type) {
+	case ConfigV5R1Final:
+		walletId = V5R1ID{
+			NetworkGlobalID: config.NetworkGlobalID,
+			WorkChain:       config.Workchain,
+			SubwalletNumber: uint16(w.subwallet),
+			WalletVersion:   0,
+		}
+	default:
+		return nil, errors.New("unsupported wallet configuration type")
 	}
 
 	payload := cell.BeginCell().
@@ -131,8 +169,8 @@ func (s *SpecV5R1Final) BuildUnsignedMessage(ctx context.Context, messages []*Me
 		MustStoreUInt(uint64(walletId.Serialized()), 32). // serialized WalletId
 		MustStoreUInt(expiry, 32).                        // validUntil
 		// MustStoreUInt(uint64(time.Now().Add(time.Duration(s.messagesTTL)*time.Second).UTC().Unix()), 32). // validUntil
-		MustStoreUInt(uint64(seq), 32). // seq (block)
-		MustStoreBuilder(actions)       // Action list
+		MustStoreUInt(sequenceNumber, 32). // seq (block)
+		MustStoreBuilder(actions)          // Action list
 
 	// sign := payload.EndCell().Sign(s.wallet.key)
 	// msg := cell.BeginCell().MustStoreBuilder(payload).MustStoreSlice(sign, 512).EndCell()

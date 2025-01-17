@@ -7,7 +7,6 @@ import (
 )
 
 type RegularBuilder interface {
-	BuildUnsignedMessage(ctx context.Context, messages []*Message, expiry uint64) (*cell.Cell, error)
 	BuildMessage(ctx context.Context, isInitialized bool, _ *ton.BlockIDExt, messages []*Message) (*cell.Cell, error)
 }
 
